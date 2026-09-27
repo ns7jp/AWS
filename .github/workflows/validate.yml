@@ -35,6 +35,9 @@ jobs:
       - name: EC2 cleanup regression tests (mock AWS CLI, no AWS access)
         run: python3 scripts/test_ec2_cleanup.py
 
+      - name: EC2 build ownership regression tests (mock AWS CLI, no AWS access)
+        run: python3 scripts/test_ec2_build_ownership.py
+
       - name: terraform validate (level 6 kit, no AWS access)
         run: |
           for env_dir in projects/06-iac-cicd/handson/environments/*/; do

@@ -1,0 +1,2 @@
+# Keep executable shell scripts usable in Git Bash and Linux checkouts.
+*.sh text eol=lf

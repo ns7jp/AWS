@@ -10,9 +10,23 @@ if [[ ! -f "${STATE_FILE}" ]]; then
 fi
 
 # Trusted local state from build.sh; never source a file from another person.
+# A missing field in a partial build must not inherit an unrelated target
+# from the caller's environment.
+unset REGION ACCOUNT_ID ALLOC_ID INSTANCE_ID SG_ID RTB_ASSOC_ID RTB_ID IGW_ID SUBNET_ID VPC_ID KEY_NAME PEM_FILE
 # shellcheck disable=SC1090
 source "${STATE_FILE}"
 REGION="${REGION:-ap-northeast-1}"
+# The local state is meaningful only in the account that created it.
+# Legacy states without an account must be checked before any deletion.
+if [[ ! "${ACCOUNT_ID:-}" =~ ^[0-9]{12}$ ]]; then
+  echo "エラー: 状態ファイルに作成元のACCOUNT_IDがありません。対象アカウントと各リソースの所有関係を確認してから補ってください。削除は実行していません。" >&2
+  exit 1
+fi
+CURRENT_ACCOUNT_ID="$(aws sts get-caller-identity --region "${REGION}" --query Account --output text)"
+if [[ "${CURRENT_ACCOUNT_ID}" != "${ACCOUNT_ID}" ]]; then
+  echo "エラー: 認証先が作成元のAWSアカウントと一致しません。状態ファイルと秘密鍵を保持し、削除は実行していません。" >&2
+  exit 1
+fi
 FAILURES=()
 AWS_OUTPUT=""
 AWS_ABSENT=0
