@@ -7,17 +7,18 @@
 # 作成したリソースIDは .handson-state.env に保存し、cleanup.sh が読み込んで削除します。
 # =============================================================================
 set -euo pipefail
+umask 077
 
 # -----------------------------------------------------------------------------
 # 変数(必要に応じて編集してください)
 # -----------------------------------------------------------------------------
-REGION="ap-northeast-1"                 # 東京リージョン
+REGION="${REGION:-ap-northeast-1}"       # 明示した実行リージョン。既定は東京
 VPC_CIDR="10.0.0.0/16"                  # VPC のアドレス範囲
 SUBNET_CIDR="10.0.1.0/24"               # パブリックサブネットのアドレス範囲
-AZ="ap-northeast-1a"                    # サブネットを置くアベイラビリティゾーン
+AZ="${AZ:-${REGION}a}"                  # 対象アカウントで使えるAZを指定
 KEY_NAME="handson-key"                  # SSH 用キーペア名(.pem がこの名前で保存されます)
 MY_IP="${MY_IP:-}"                      # 自分のグローバルIP(例: 203.0.113.10)。空なら自動取得
-INSTANCE_TYPE="t3.micro"                # 無料利用枠対象のインスタンスタイプ
+INSTANCE_TYPE="t3.micro"                # 無料利用条件はアカウントごとに確認
 NAME_PREFIX="handson"                   # 各リソースの Name タグの接頭辞
 
 # -----------------------------------------------------------------------------
@@ -26,10 +27,36 @@ NAME_PREFIX="handson"                   # 各リソースの Name タグの接�
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_FILE="${SCRIPT_DIR}/.handson-state.env"
 USER_DATA_FILE="${SCRIPT_DIR}/user-data.sh"
+PEM_FILE="${SCRIPT_DIR}/${KEY_NAME}.pem"
 
 if [[ -f "${STATE_FILE}" ]]; then
   echo "エラー: ${STATE_FILE} が既に存在します。前回のリソースが残っている可能性があります。" >&2
   echo "       先に ./cleanup.sh を実行してください。" >&2
+  exit 1
+fi
+
+if [[ -e "${PEM_FILE}" || -L "${PEM_FILE}" ]]; then
+  echo "エラー: 既存の秘密鍵ファイルがあります。上書きせず停止します: ${PEM_FILE}" >&2
+  exit 1
+fi
+
+# Read identity before creating resources. Never infer the intended account
+# from whichever profile happens to be active.
+if [[ ! "${EXPECTED_ACCOUNT_ID:-}" =~ ^[0-9]{12}$ ]]; then
+  echo "エラー: 実行対象の12桁のAWSアカウントIDを EXPECTED_ACCOUNT_ID に指定してください。" >&2
+  exit 1
+fi
+if ! command -v aws >/dev/null 2>&1; then
+  echo "エラー: AWS CLI v2 が必要です。" >&2
+  exit 1
+fi
+if [[ "$(aws --version 2>&1)" != aws-cli/2.* ]]; then
+  echo "エラー: AWS CLI v2 を使用してください。" >&2
+  exit 1
+fi
+ACCOUNT_ID="$(aws sts get-caller-identity --region "${REGION}" --query Account --output text)"
+if [[ "${ACCOUNT_ID}" != "${EXPECTED_ACCOUNT_ID}" ]]; then
+  echo "エラー: 認証先が指定したAWSアカウントと一致しません。リソースは作成していません。" >&2
   exit 1
 fi
 
@@ -45,7 +72,7 @@ save_state() {
 }
 
 echo "REGION=\"${REGION}\"" > "${STATE_FILE}"
-save_state KEY_NAME "${KEY_NAME}"
+save_state ACCOUNT_ID "${ACCOUNT_ID}"
 
 echo "=== 構築を開始します (リージョン: ${REGION}) ==="
 
@@ -140,15 +167,20 @@ echo "  SG_ID=${SG_ID}"
 # フェーズ4-1: キーペアを作成(秘密鍵はこのタイミングでしか取得できません)
 # -----------------------------------------------------------------------------
 echo "[6/9] キーペアを作成中..."
-PEM_FILE="${SCRIPT_DIR}/${KEY_NAME}.pem"
-aws ec2 create-key-pair \
+KEY_MATERIAL="$(aws ec2 create-key-pair \
   --region "${REGION}" \
   --key-name "${KEY_NAME}" \
   --key-type rsa \
   --key-format pem \
-  --query 'KeyMaterial' --output text > "${PEM_FILE}"
-chmod 400 "${PEM_FILE}"
+  --query 'KeyMaterial' --output text)"
+# A duplicate-name failure above must never enroll a pre-existing AWS key
+# for deletion. Record ownership only after CreateKeyPair succeeds.
+save_state KEY_NAME "${KEY_NAME}"
+# noclobber also protects a local file created after the initial check.
+(set -o noclobber; printf '%s\n' "${KEY_MATERIAL}" > "${PEM_FILE}")
+unset KEY_MATERIAL
 save_state PEM_FILE "${PEM_FILE}"
+chmod 400 "${PEM_FILE}"
 echo "  秘密鍵を保存しました: ${PEM_FILE}"
 
 # -----------------------------------------------------------------------------

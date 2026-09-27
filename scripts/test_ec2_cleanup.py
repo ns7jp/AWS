@@ -19,6 +19,10 @@ ACTIONS = [
 ]
 MOCK = r'''#!/usr/bin/env bash
 set -euo pipefail
+if [[ "$1" == sts && "$2" == get-caller-identity ]]; then
+  echo "${MOCK_ACCOUNT_ID:-111111111111}"
+  exit 0
+fi
 [[ "$1" == ec2 ]] || exit 97
 action="$2"
 printf '%s\n' "$*" >> aws-calls.log
@@ -80,7 +84,7 @@ class CleanupTests(unittest.TestCase):
         self.pem = self.path / "handson-key.pem"
         self.pem.write_text("mock key, not a credential", encoding="utf-8")
         self.state.write_text(
-            'REGION="us-west-2"\nALLOC_ID="eipalloc-test"\nINSTANCE_ID="i-test"\n'
+            'REGION="us-west-2"\nACCOUNT_ID="111111111111"\nALLOC_ID="eipalloc-test"\nINSTANCE_ID="i-test"\n'
             'SG_ID="sg-test"\nRTB_ASSOC_ID="rtbassoc-test"\nRTB_ID="rtb-test"\n'
             'IGW_ID="igw-test"\nSUBNET_ID="subnet-test"\nVPC_ID="vpc-test"\n'
             'KEY_NAME="handson-key"\nPEM_FILE="${SCRIPT_DIR}/handson-key.pem"\n',
@@ -90,7 +94,7 @@ class CleanupTests(unittest.TestCase):
 
     def run_cleanup(self, **settings):
         env = os.environ.copy()
-        for name in ("FAIL_ACTION", "FAIL_CODE", "MODE", "ASSOCIATION", "BASH_ENV", "ENV"):
+        for name in ("FAIL_ACTION", "FAIL_CODE", "MODE", "ASSOCIATION", "BASH_ENV", "ENV", "MOCK_ACCOUNT_ID"):
             env.pop(name, None)
         env.update(settings)
         env.update(AWS_EC2_METADATA_DISABLED="true", AWS_CONFIG_FILE="nonexistent-config",
@@ -173,6 +177,16 @@ class CleanupTests(unittest.TestCase):
         mock_rm.write_text("#!/usr/bin/env bash\necho 'mock local removal failure' >&2\nexit 1\n", encoding="utf-8", newline="\n")
         mock_rm.chmod(0o755)
         self.assert_preserved(self.run_cleanup())
+
+    def test_wrong_account_never_deletes_resources_or_local_files(self):
+        self.assert_preserved(self.run_cleanup(MOCK_ACCOUNT_ID="222222222222"))
+        self.assertEqual(self.actions(), [])
+
+    def test_legacy_state_without_account_refuses_deletion(self):
+        self.state.write_text(self.state.read_text(encoding="utf-8").replace('ACCOUNT_ID="111111111111"\n', ''), encoding="utf-8", newline="\n")
+        self.initial_state = self.state.read_bytes()
+        self.assert_preserved(self.run_cleanup())
+        self.assertEqual(self.actions(), [])
 
 
 if __name__ == "__main__":
